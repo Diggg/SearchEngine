@@ -1,3 +1,4 @@
+import os
 from urllib import request
 import urllib
 import traceback
@@ -33,7 +34,16 @@ class crawler:
     def addtoindex(self,url,soup):
         if self.isindexed(url): return
         print('Indexing %s' % url)
-
+        path = file_root + url.split('/')[-1]
+        print(path)
+        #print(soup.string)
+        #if not os.path.exists(path):
+        #    with open(path,'w',encoding='utf-8') as f:
+        #        f.write(soup.get_text())
+        #        f.close()
+        with open(path,'wb') as f:
+            f.write(soup.prettify(encoding='utf-8'))
+            f.close()
         #获取每个单词
         text=self.gettextonly(soup)
         words=self.separatewords(text)
@@ -102,7 +112,7 @@ class crawler:
             newpages=set()
             for page in pages:
                 try:
-                    print('Tring to open: %s' % page)
+                    #print('Tring to open: %s' % page)
                     req = urllib.request.Request(url=page, headers=headers)
                     c=urllib.request.urlopen(req).read()
                 except Exception as err:
@@ -113,9 +123,9 @@ class crawler:
                 soup=BeautifulSoup(c,"html.parser")
                 self.addtoindex(page,soup)
 
-                links=soup('a')
-                #抓取网页内的所有连接
-                for link in links:
+                links=soup('a',{"class","liblink1"})
+                #抓取网页内的所有连接 limit max_nums
+                for link in links[:max_nums]:
                     if ('href' in dict(link.attrs)):
                         url=urllib.parse.urljoin(page,link['href'])
                         if url.find("'") !=-1: continue
@@ -150,30 +160,109 @@ class searcher:
             wordrow=self.con.execute(
                 "select rowid from wordlist where word='%s'" % word
             ).fetchone()
-        if wordrow!=None:
-            wordid=wordrow[0]
-            wordids.append(wordid)
+            if wordrow!=None:
+                wordid=wordrow[0]
+                wordids.append(wordid)
 
-            if tablenumber>0:
-                tablelist+=','
-                clauselist+=' and '
-                clauselist+='w%d.urlid=w%d.urlid and ' % (tablenumber-1,tablenumber)
-            fieldlist+=',w%d.location' % tablenumber
-            tablelist+='wordlocation w%d' % tablenumber
-            clauselist+='w%dwordid=%d' % (tablenumber,wordid)
-            tablenumber+=1
+                if tablenumber>0:
+                    tablelist+=','
+                    clauselist+=' and '
+                    clauselist+='w%d.urlid=w%d.urlid and ' % (tablenumber-1,tablenumber)
+                fieldlist+=',w%d.location' % tablenumber
+                tablelist+='wordlocation w%d' % tablenumber
+                clauselist+='w%d.wordid=%d' % (tablenumber,wordid)
+                tablenumber+=1
 
         #根据各个组分，建立查询
         fullquery='select %s from %s where %s' %(fieldlist,tablelist,clauselist)
+
         cur=self.con.execute(fullquery)
         rows=[row for row in cur]
+        #print(rows)
         return rows,wordids
 
+    def getscoredlist(self,rows,wordids):
+        totalscores=dict([(rows[0],0) for row in rows])
+
+        #此处是稍后放置评价函数的地方
+
+        weights=[]
+        for (weight,scores) in weights:
+            for url in totalscores:
+                totalscores[url]+=weight*scores[url]
+
+        return totalscores
+
+    def geturlname(self,id):
+        return self.con.execute(
+            "select url from urllist where rowid=%d" % id
+        ).fetchone()[0]
+
+    def query(self,q):
+        rows,wordids=self.getmatchrows(q)
+        scores=self.getscoredlist(rows,wordids)
+        rankedscores=sorted([(score,url) for (url,socre) in scores.items()],reversed=1)
+        for (score,urlid) in rankedscores[0:10]:
+            print('%f\t%s' % (score,self.geturlname(urlid)))
+
+    def getscoredlist(self,rows,wordids):
+        totalscores=dict([(row[0],0) for row in rows])
+
+        weights=[(1.0,self.frequencyscore(rows))]
+        for (weight,scores) in weights:
+            for url in totalscores:
+                totalscores[url]+=weight*scores[url]
+
+        return totalscores
+
+    def getrulname(self,id):
+        return self.con.execute(
+            "select url from urllist where rowid=%d" % id
+        ).fetchone()[0]
+
+    def query(self,q):
+        rows,wordids=self.getmatchrows(q)
+        scores=self.getscoredlist(rows,wordids)
+        rankedscores=sorted([(score,url) for (url,score) in scores.items()],reverse=1)
+        for (score,urlid) in rankedscores[0:10]:
+            print('%f\t%s' % (score,self.geturlname(urlid)))
+
+    def normalizescores(self,scores,smallIsBetter=0):
+        vsmall=0.00001 #避免被0整除
+        if smallIsBetter:
+            minscore=min(scores.values())
+            return dict([(u,float(minscore)/max(vsmall,x)) for (u,x) in scores.items()])
+        else:
+            maxscore=max(scores.values())
+            if maxscore==0: maxscore=vsmall
+            return dict([(u,float(c)/maxscore) for (u,c) in scores.items()])
+    #单词频度 计算分数
+    def frequencyscore(self,rows):
+        counts=dict([(row[0],0) for row in rows])
+        for row in rows: counts[row[0]]+=1
+        return self.normalizescores(counts)
 
 
 
-if "__name__" =="__main__":
-    pagelist=['http://www.itpub.net/forum-2-1.html']
+if __name__ =="__main__":
+    pagelist=['http://psoug.org/reference/library.html']
     crawler=crawler('searchindex.db')
+    #global file_root,max_nums
+    file_root="D://GitHub//SearchEngine//htmls//"
+    max_nums=10
+    if not os.path.exists(file_root):
+        os.mkdir(file_root)
     crawler.createindextables()
-    crawler.crawl(pagelist)
+    #crawler.crawl(pagelist)
+    e=searcher('searchindex.db')
+    ##Use Lower Case Character
+    rows,wordids=e.getmatchrows('oracle')
+    print(rows)
+    e.query('oracle')
+    # wordlist=e.con.execute(
+    #
+    #     "select * from wordlist"
+    # )
+    # for word in wordlist:
+    #     print(word)
+    #
