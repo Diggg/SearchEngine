@@ -175,23 +175,23 @@ class searcher:
 
         #根据各个组分，建立查询
         fullquery='select %s from %s where %s' %(fieldlist,tablelist,clauselist)
-
+        #print(fullquery)
         cur=self.con.execute(fullquery)
         rows=[row for row in cur]
-        #print(rows)
+        #rows = [urlid,wordlocation***] 每个urlid内每个查询单词的位置
         return rows,wordids
 
-    def getscoredlist(self,rows,wordids):
-        totalscores=dict([(rows[0],0) for row in rows])
-
-        #此处是稍后放置评价函数的地方
-
-        weights=[]
-        for (weight,scores) in weights:
-            for url in totalscores:
-                totalscores[url]+=weight*scores[url]
-
-        return totalscores
+    # def getscoredlist(self,rows,wordids):
+    #     totalscores=dict([(rows[0],0) for row in rows])
+    #
+    #     #此处是稍后放置评价函数的地方
+    #
+    #     weights=[]
+    #     for (weight,scores) in weights:
+    #         for url in totalscores:
+    #             totalscores[url]+=weight*scores[url]
+    #
+    #     return totalscores
 
     def geturlname(self,id):
         return self.con.execute(
@@ -201,14 +201,18 @@ class searcher:
     def query(self,q):
         rows,wordids=self.getmatchrows(q)
         scores=self.getscoredlist(rows,wordids)
-        rankedscores=sorted([(score,url) for (url,socre) in scores.items()],reversed=1)
+        rankedscores=sorted([(score,url) for (url,score) in scores.items()],reversed=1)
         for (score,urlid) in rankedscores[0:10]:
             print('%f\t%s' % (score,self.geturlname(urlid)))
 
     def getscoredlist(self,rows,wordids):
         totalscores=dict([(row[0],0) for row in rows])
-
-        weights=[(1.0,self.frequencyscore(rows))]
+        #搜索权重
+        #weights=[(1.0,self.frequencyscore(rows))]
+        #weights=[(1.0,self.locationscore(rows))]
+        weights=[(1.0,self.frequencyscore(rows)),
+                 (1.5,self.locationscore(rows)),
+                 (2,self.distancescore(rows))]
         for (weight,scores) in weights:
             for url in totalscores:
                 totalscores[url]+=weight*scores[url]
@@ -242,6 +246,30 @@ class searcher:
         for row in rows: counts[row[0]]+=1
         return self.normalizescores(counts)
 
+    def locationscore(self,rows):
+        locations=dict([(row[0],1000000) for row in rows])
+        print(rows)
+        print(locations)
+        # 此处只是简单把单词在页面中的位置加总取最小值来判断其最匹配
+        # 如果存在1000，1001和100，500这种情况，会把后一种情况视为更匹配，不合理
+        # 可以考虑单词顺序，和单词位置差,看 distancescore()函数
+        for row in rows:
+            loc=sum(row[1:])
+            if loc<locations[row[0]]: locations[row[0]]=loc
+        print(locations)
+        return self.normalizescores(locations,smallIsBetter=1)
+
+    def distancescore(self,rows):
+        #如果仅有一个单词，得分都一样
+        if len(rows[0]) <= 2: return dict([(row[0],1.0) for row in rows])
+
+        #初始化字典，并填入一个很大的数
+        mindistance=dict([(row[0],1000000) for row in rows])
+        for row in rows:
+            dist=sum([abs(row[i]-row[i-1]) for i in range(2,len(row))])
+            if dist<mindistance[row[0]]: mindistance[row[0]]=dist
+        return self.normalizescores(mindistance,smallIsBetter=1)
+
 
 
 if __name__ =="__main__":
@@ -256,9 +284,9 @@ if __name__ =="__main__":
     #crawler.crawl(pagelist)
     e=searcher('searchindex.db')
     ##Use Lower Case Character
-    rows,wordids=e.getmatchrows('oracle')
-    print(rows)
-    e.query('oracle')
+    #rows,wordids=e.getmatchrows('oracle')
+    #print(rows)
+    e.query('one table')
     # wordlist=e.con.execute(
     #
     #     "select * from wordlist"
