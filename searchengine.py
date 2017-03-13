@@ -11,7 +11,6 @@ class crawler:
     def __init__(self,dbname):
         self.con=sqlite.connect(dbname)
 
-
     def __del__(self):
         self.con.close()
 
@@ -136,6 +135,38 @@ class crawler:
                         self.addlinkref(page,url,linkText)
                 self.dbcommit()
             pages=newpages
+
+    def calculatepagerank(self,iterations=20):
+        #清除当前的PageRank表
+        self.con.execute('drop table if exists pagerank')
+        self.con.execute('create table pagerank(urlid primary key,score)')
+        self.dbcommit()
+
+        for i in range(iterations):
+            print("Iteration %d" % i)
+
+            for(urlid,) in self.con.execute('select rowid from urllist'):
+                pr=0.15
+
+                #循环遍历指向当前网页的所有其他网页
+                for(linker,) in self.con.execute(
+                    'select distinct fromid from link where toid=%d' %urlid
+                ):
+                    #得到链接源对应网页的PageRank值
+                    linkingpr=self.con.execute(
+                        'select score from pagerank where urlid=%d' % linker
+                    ).fetchone()[0]
+
+                    #根据连接源,求得总的链接数
+                    linkingcount=self.con.execute(
+                        'select count(*) from link where fromid=%d' % linker
+                    ).fetchone()[0]
+
+                    pr+=0.85*(linkingpr/linkingcount)
+                self.con.execute(
+                    'update pagerank set score=%f where urlid=%d' % (pr,urlid)
+                )
+            self.dbcommit()
 
 
 class searcher:
@@ -270,27 +301,36 @@ class searcher:
             if dist<mindistance[row[0]]: mindistance[row[0]]=dist
         return self.normalizescores(mindistance,smallIsBetter=1)
 
+    def inboundlinkscore(self,rows):
+        uniqueurls=set([row[0] for row in rows])
+        inboundcount=dict([(u,self.con.execute(
+            'select count(*) from link where toid=%d' % u
+        ).fetchone()[0]) for u in uniqueurls])
+        return self.normalizescores(inboundcount)
+
 
 
 if __name__ =="__main__":
     pagelist=['http://psoug.org/reference/library.html']
-    crawler=crawler('searchindex.db')
+    crawler1=crawler('searchindex.db')
     #global file_root,max_nums
     file_root="D://GitHub//SearchEngine//htmls//"
     max_nums=10
     if not os.path.exists(file_root):
         os.mkdir(file_root)
-    crawler.createindextables()
+    crawler1.createindextables()
     #crawler.crawl(pagelist)
     e=searcher('searchindex.db')
     ##Use Lower Case Character
     #rows,wordids=e.getmatchrows('oracle')
     #print(rows)
-    e.query('one table')
-    # wordlist=e.con.execute(
-    #
-    #     "select * from wordlist"
-    # )
-    # for word in wordlist:
-    #     print(word)
-    #
+    #e.query('one table')
+
+    faa=crawler('searchindex.db')
+    faa.calculatepagerank()
+    cur=faa.con.execute(
+        "select * from pagerank order by score desc"
+    )
+    for i in cur:
+        print(i)
+
