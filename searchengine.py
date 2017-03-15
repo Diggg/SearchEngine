@@ -85,14 +85,35 @@ class crawler:
             ).fetchone()
         return False
 
+      # Add a link between two pages
     def addlinkref(self,urlFrom,urlTo,linkText):
-        pass
+      words=self.separatewords(linkText)
+      fromid=self.getentryid('urllist','url',urlFrom)
+      toid=self.getentryid('urllist','url',urlTo)
+      if fromid==toid: return
+      cur=self.con.execute("insert into link(fromid,toid) values (%d,%d)" % (fromid,toid))
+      linkid=cur.lastrowid
+      for word in words:
+        if word in ignorewords: continue
+        wordid=self.getentryid('wordlist','word',word)
+        self.con.execute("insert into linkwords(linkid,wordid) values (%d,%d)" % (linkid,wordid))
 
-    def crawl(self,pages,depth=2):
-        pass
+
 
     #使用IF NOT EXISTS避免表已经存在
     def createindextables(self):
+        if 1==2 :
+            self.con.execute('drop table IF EXISTS urllist')
+            self.con.execute('drop table IF EXISTS wordlist')
+            self.con.execute('drop table IF EXISTS wordlocation')
+            self.con.execute('drop table IF EXISTS link')
+            self.con.execute('drop table IF EXISTS linkwords')
+            self.con.execute('drop index IF EXISTS wordidx')
+            self.con.execute('drop index IF EXISTS urlidx')
+            self.con.execute('drop index IF EXISTS wordurlidx')
+            self.con.execute('drop index IF EXISTS urltoidx')
+            self.con.execute('drop index IF EXISTS urlfromidx')
+
         self.con.execute('create table IF NOT EXISTS urllist(url)')
         self.con.execute('create table IF NOT EXISTS wordlist(word)')
         self.con.execute('create table IF NOT EXISTS wordlocation(urlid,wordid,location)')
@@ -113,6 +134,7 @@ class crawler:
                 try:
                     #print('Tring to open: %s' % page)
                     req = urllib.request.Request(url=page, headers=headers)
+
                     c=urllib.request.urlopen(req).read()
                 except Exception as err:
                     print(err)
@@ -120,15 +142,19 @@ class crawler:
                     print("Could not open %s" % page)
                     continue
                 soup=BeautifulSoup(c,"html.parser")
-                self.addtoindex(page,soup)
+                if not self.isindexed(page):
+                    self.addtoindex(page,soup)
 
-                links=soup('a',{"class","liblink1"})
+                #links=soup('a',{"class","liblink1"})
+                links=soup('a')
                 #抓取网页内的所有连接 limit max_nums
                 for link in links[:max_nums]:
                     if ('href' in dict(link.attrs)):
                         url=urllib.parse.urljoin(page,link['href'])
                         if url.find("'") !=-1: continue
                         url=url.split('#')[0]   #去除位置部分
+                        if url[0:4] != 'http':
+                            utl='https://'+url
                         if url[0:4]=='http' and not self.isindexed(url):
                             newpages.add(url)
                         linkText=self.gettextonly(link)
@@ -140,8 +166,11 @@ class crawler:
         #清除当前的PageRank表
         self.con.execute('drop table if exists pagerank')
         self.con.execute('create table pagerank(urlid primary key,score)')
-        self.dbcommit()
 
+        #初始化每个URL，令其pageRank默认值为1
+        self.con.execute('insert into pagerank select rowid, 1.0 from urllist')
+
+        self.dbcommit()
         for i in range(iterations):
             print("Iteration %d" % i)
 
@@ -167,6 +196,8 @@ class crawler:
                     'update pagerank set score=%f where urlid=%d' % (pr,urlid)
                 )
             self.dbcommit()
+        cur=self.con.execute('select * from link')
+        print(cur.fetchall())
 
 
 class searcher:
@@ -206,7 +237,7 @@ class searcher:
 
         #根据各个组分，建立查询
         fullquery='select %s from %s where %s' %(fieldlist,tablelist,clauselist)
-        #print(fullquery)
+        print(fullquery)
         cur=self.con.execute(fullquery)
         rows=[row for row in cur]
         #rows = [urlid,wordlocation***] 每个urlid内每个查询单词的位置
@@ -242,8 +273,11 @@ class searcher:
         #weights=[(1.0,self.frequencyscore(rows))]
         #weights=[(1.0,self.locationscore(rows))]
         weights=[(1.0,self.frequencyscore(rows)),
-                 (1.5,self.locationscore(rows)),
-                 (2,self.distancescore(rows))]
+                 (1.0,self.locationscore(rows)),
+                 (1.0,self.distancescore(rows)),
+                 (1.0,self.pagerankscore(rows)),
+                 (1.0,self.inboundlinkscore(rows)),
+                 (1.0,self.linktextscore(rows,wordids))]
         for (weight,scores) in weights:
             for url in totalscores:
                 totalscores[url]+=weight*scores[url]
@@ -279,15 +313,15 @@ class searcher:
 
     def locationscore(self,rows):
         locations=dict([(row[0],1000000) for row in rows])
-        print(rows)
-        print(locations)
+        #print(rows)
+        #print(locations)
         # 此处只是简单把单词在页面中的位置加总取最小值来判断其最匹配
         # 如果存在1000，1001和100，500这种情况，会把后一种情况视为更匹配，不合理
         # 可以考虑单词顺序，和单词位置差,看 distancescore()函数
         for row in rows:
             loc=sum(row[1:])
             if loc<locations[row[0]]: locations[row[0]]=loc
-        print(locations)
+        #print(locations)
         return self.normalizescores(locations,smallIsBetter=1)
 
     def distancescore(self,rows):
@@ -308,29 +342,46 @@ class searcher:
         ).fetchone()[0]) for u in uniqueurls])
         return self.normalizescores(inboundcount)
 
+    def pagerankscore(self,rows):
+        pageranks=dict([(row[0],self.con.execute(
+            'select score from pagerank where urlid=%d' % row[0]
+        ).fetchone()[0]) for row in rows])
+        maxrank=max(pageranks.values())
+        normalizedscores=dict([(u,float(x)/maxrank) for (u,x) in pageranks.items()])
+        return normalizedscores
 
+    def linktextscore(self,rows,wordids):
+        linkscores=dict([(row[0],0) for row in rows])
+        for wordid in wordids:
+            cur=self.con.execute('select link.fromid,link.toid from linkwords,link \
+                                 where wordid=%d and linkwords.linkid=link.rowid' % wordid)
+            for (fromid,toid) in cur:
+                if toid in linkscores:
+                    pr=self.con.execute(
+                        'select score from pagerank where urlid=%d' % fromid
+                    ).fetchone()[0]
+                    linkscores[toid]+=pr
+        print(linkscores)
+        maxscore=max(linkscores.values())
+        if maxscore == 0 :
+            maxscore=1
+        normalizedscores=dict([(u,float(x)/maxscore) for (u,x) in linkscores.items()])
+        return normalizedscores
 
 if __name__ =="__main__":
-    pagelist=['http://psoug.org/reference/library.html']
+    pagelist=['https://doc.scrapy.org/en/1.3/genindex.html']
     crawler1=crawler('searchindex.db')
     #global file_root,max_nums
     file_root="D://GitHub//SearchEngine//htmls//"
-    max_nums=10
+    max_nums=200
     if not os.path.exists(file_root):
         os.mkdir(file_root)
     crawler1.createindextables()
-    #crawler.crawl(pagelist)
+    #crawler1.crawl(pagelist)
+    crawler1.calculatepagerank()
     e=searcher('searchindex.db')
     ##Use Lower Case Character
     #rows,wordids=e.getmatchrows('oracle')
     #print(rows)
-    #e.query('one table')
-
-    faa=crawler('searchindex.db')
-    faa.calculatepagerank()
-    cur=faa.con.execute(
-        "select * from pagerank order by score desc"
-    )
-    for i in cur:
-        print(i)
+    e.query('one table')
 
