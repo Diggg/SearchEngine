@@ -5,6 +5,7 @@ import traceback
 from bs4 import *
 import sqlite3 as sqlite
 import re
+import nn
 ignorewords=set(['the','of','to','and','a','in','is','it'])
 
 class crawler:
@@ -161,7 +162,7 @@ class crawler:
                         self.addlinkref(page,url,linkText)
                 self.dbcommit()
             pages=newpages
-
+    #迭代20次，从而逐渐算出正确结果
     def calculatepagerank(self,iterations=20):
         #清除当前的PageRank表
         self.con.execute('drop table if exists pagerank')
@@ -172,7 +173,7 @@ class crawler:
 
         self.dbcommit()
         for i in range(iterations):
-            print("Iteration %d" % i)
+            #print("Iteration %d" % i)
 
             for(urlid,) in self.con.execute('select rowid from urllist'):
                 pr=0.15
@@ -197,7 +198,7 @@ class crawler:
                 )
             self.dbcommit()
         cur=self.con.execute('select * from link')
-        print(cur.fetchall())
+        #print(cur.fetchall())
 
 
 class searcher:
@@ -237,7 +238,7 @@ class searcher:
 
         #根据各个组分，建立查询
         fullquery='select %s from %s where %s' %(fieldlist,tablelist,clauselist)
-        print(fullquery)
+        #print(fullquery)
         cur=self.con.execute(fullquery)
         rows=[row for row in cur]
         #rows = [urlid,wordlocation***] 每个urlid内每个查询单词的位置
@@ -260,12 +261,6 @@ class searcher:
             "select url from urllist where rowid=%d" % id
         ).fetchone()[0]
 
-    def query(self,q):
-        rows,wordids=self.getmatchrows(q)
-        scores=self.getscoredlist(rows,wordids)
-        rankedscores=sorted([(score,url) for (url,score) in scores.items()],reversed=1)
-        for (score,urlid) in rankedscores[0:10]:
-            print('%f\t%s' % (score,self.geturlname(urlid)))
 
     def getscoredlist(self,rows,wordids):
         totalscores=dict([(row[0],0) for row in rows])
@@ -277,7 +272,9 @@ class searcher:
                  (1.0,self.distancescore(rows)),
                  (1.0,self.pagerankscore(rows)),
                  (1.0,self.inboundlinkscore(rows)),
-                 (1.0,self.linktextscore(rows,wordids))]
+                 (1.0,self.linktextscore(rows,wordids)),
+                 ##等到网络经过大量不同样例的训练后再将nnscore加入评价值
+                 (1.0,self.nnscore(rows,wordids))]
         for (weight,scores) in weights:
             for url in totalscores:
                 totalscores[url]+=weight*scores[url]
@@ -288,13 +285,20 @@ class searcher:
         return self.con.execute(
             "select url from urllist where rowid=%d" % id
         ).fetchone()[0]
-
+    #
     def query(self,q):
         rows,wordids=self.getmatchrows(q)
         scores=self.getscoredlist(rows,wordids)
         rankedscores=sorted([(score,url) for (url,score) in scores.items()],reverse=1)
         for (score,urlid) in rankedscores[0:10]:
-            print('%f\t%s' % (score,self.geturlname(urlid)))
+            print('Page ID: %d\t%f\t%s' % (urlid,score,self.geturlname(urlid)))
+
+    #def query(self,q):
+    #    rows,wordids=self.getmatchrows(q)
+    #    scores=self.getscoredlist(rows,wordids)
+    #    rankedscores=sorted([(score,url) for (url,score) in scores.items()],reverse=1)
+    #    for (score,urlid) in rankedscores[0:10]:
+    #        print('%f\t%s' % (score,self.geturlname(urlid)))
 
     def normalizescores(self,scores,smallIsBetter=0):
         vsmall=0.00001 #避免被0整除
@@ -309,7 +313,10 @@ class searcher:
     def frequencyscore(self,rows):
         counts=dict([(row[0],0) for row in rows])
         for row in rows: counts[row[0]]+=1
-        return self.normalizescores(counts)
+        normalizedscores=self.normalizescores(counts)
+        print('frequencyscore:',normalizedscores)
+        return normalizedscores
+        #return self.normalizescores(counts)
 
     def locationscore(self,rows):
         locations=dict([(row[0],1000000) for row in rows])
@@ -322,7 +329,10 @@ class searcher:
             loc=sum(row[1:])
             if loc<locations[row[0]]: locations[row[0]]=loc
         #print(locations)
-        return self.normalizescores(locations,smallIsBetter=1)
+        normalizedscores=self.normalizescores(locations,smallIsBetter=1)
+        print('locationscore:',normalizedscores)
+        return normalizedscores
+        #return self.normalizescores(locations,smallIsBetter=1)
 
     def distancescore(self,rows):
         #如果仅有一个单词，得分都一样
@@ -333,14 +343,19 @@ class searcher:
         for row in rows:
             dist=sum([abs(row[i]-row[i-1]) for i in range(2,len(row))])
             if dist<mindistance[row[0]]: mindistance[row[0]]=dist
-        return self.normalizescores(mindistance,smallIsBetter=1)
+        normalizedscores=self.normalizescores(mindistance,smallIsBetter=1)
+        print('distancescore:',normalizedscores)
+        return normalizedscores
+        #return self.normalizescores(mindistance,smallIsBetter=1)
 
     def inboundlinkscore(self,rows):
         uniqueurls=set([row[0] for row in rows])
         inboundcount=dict([(u,self.con.execute(
             'select count(*) from link where toid=%d' % u
         ).fetchone()[0]) for u in uniqueurls])
-        return self.normalizescores(inboundcount)
+        normalizedscores=self.normalizescores(inboundcount)
+        print('inboundlinkscore:',normalizedscores)
+        return normalizedscores
 
     def pagerankscore(self,rows):
         pageranks=dict([(row[0],self.con.execute(
@@ -348,6 +363,7 @@ class searcher:
         ).fetchone()[0]) for row in rows])
         maxrank=max(pageranks.values())
         normalizedscores=dict([(u,float(x)/maxrank) for (u,x) in pageranks.items()])
+        print('pagerankscore:',normalizedscores)
         return normalizedscores
 
     def linktextscore(self,rows,wordids):
@@ -366,22 +382,36 @@ class searcher:
         if maxscore == 0 :
             maxscore=1
         normalizedscores=dict([(u,float(x)/maxscore) for (u,x) in linkscores.items()])
+        print('linktextscore:',normalizedscores)
         return normalizedscores
+
+    def nnscore(self,rows,wordids):
+        #获取由URL ID构成的有序列表
+        urlids=[urlid for urlid in set([row[0] for row in rows])]
+        nnres=mynet.getresult(wordids,urlids)
+        scores=dict([(urlids[i],nnres[i]) for i in range(len(urlids))])
+        normalizedscores=self.normalizescores(scores)
+        print('nnscore:',normalizedscores)
+        return normalizedscores
+        #return self.normalizescores(scores)
 
 if __name__ =="__main__":
     pagelist=['https://doc.scrapy.org/en/1.3/genindex.html']
     crawler1=crawler('searchindex.db')
-    #global file_root,max_nums
+
     file_root="D://GitHub//SearchEngine//htmls//"
-    max_nums=200
+    ##扒取最大页面数
+    max_nums=20
     if not os.path.exists(file_root):
         os.mkdir(file_root)
     crawler1.createindextables()
     #crawler1.crawl(pagelist)
     crawler1.calculatepagerank()
     e=searcher('searchindex.db')
+
+    mynet=nn.searchnet('nn.db')
     ##Use Lower Case Character
     #rows,wordids=e.getmatchrows('oracle')
     #print(rows)
-    e.query('one table')
+    e.query('scrapy pipline')
 

@@ -67,6 +67,7 @@ class searchnet:
 
     def getallhiddenids(self,wordids,urlids):
         l1={}
+
         for wordid in wordids:
             cur=self.con.execute(
                 'select toid from wordhidden where fromid=%d' % wordid
@@ -74,8 +75,9 @@ class searchnet:
             for row in cur: l1[row[0]]=1
         for urlid in urlids:
             cur=self.con.execute(
-                'select fromid from hiddenurl where toid=%d' % urlid
+                    'select fromid from hiddenurl where toid=%d' % urlid
             )
+
             for row in cur: l1[row[0]]=1
 
         return l1.keys()
@@ -123,7 +125,6 @@ class searchnet:
 
     def getresult(self,wordids,urlids):
           self.setupnetwork(wordids,urlids)
-          print('Urls:',urlids,'Words:',wordids)
           return self.feedforward()
 
     def backPropagate(self, targets, N=0.5):
@@ -183,7 +184,7 @@ class searchnet:
         print('wi',self.wi)
         print('wo',self.wo)
 
-if __name__=="__main__":
+if __name__=="XXXX":
     mynet=searchnet('nn.db')
     mynet.maketables()
     wWorld,wRiver,wBank=101,102,103
@@ -199,20 +200,18 @@ if __name__=="__main__":
     for c in mynet.con.execute('select * from hiddennode'):
         print(c)
 
+    mynet.trainquery([wWorld,wBank],[uWorldBank,uRiver,uEarth],uWorldBank)
+    print(mynet.getresult([wWorld,wBank],[uWorldBank,uRiver,uEarth]))
+    mynet.printPar()
 
+    allurls=[uWorldBank,uRiver,uEarth]
+    for i in range(30):
+        mynet.trainquery([wWorld,wBank],allurls,uWorldBank)
+        mynet.trainquery([wRiver,wBank],allurls,uRiver)
+        mynet.trainquery([wWorld],allurls,uEarth)
 
-mynet.trainquery([wWorld,wBank],[uWorldBank,uRiver,uEarth],uWorldBank)
-print(mynet.getresult([wWorld,wBank],[uWorldBank,uRiver,uEarth]))
-mynet.printPar()
-
-allurls=[uWorldBank,uRiver,uEarth]
-for i in range(30):
-    mynet.trainquery([wWorld,wBank],allurls,uWorldBank)
-    mynet.trainquery([wRiver,wBank],allurls,uRiver)
-    mynet.trainquery([wWorld],allurls,uEarth)
-
-print(mynet.getresult([wWorld,wBank],allurls))
-print(mynet.getresult([wRiver,wBank],allurls))
-print(mynet.getresult([wWorld],allurls))
+    print(mynet.getresult([wWorld,wBank],allurls))
+    print(mynet.getresult([wRiver,wBank],allurls))
+    print(mynet.getresult([wWorld],allurls))
 
 
